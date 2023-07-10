@@ -5,20 +5,6 @@ import (
 	"sort"
 )
 
-func SortUserIds(users map[int]*models.User) []int {
-	sorted := make([]int, len(users))
-
-	i := 0
-	for userId := range users {
-		sorted[i] = userId
-		i++
-	}
-
-	sort.Ints(sorted)
-
-	return sorted
-}
-
 func SortAttributes(attributes map[string]*models.Attribute) []string {
 	sorted := make([]string, len(attributes))
 

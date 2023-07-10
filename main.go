@@ -3,32 +3,46 @@ package main
 import (
 	"bufio"
 	"context"
+	"flag"
 	"fmt"
 	"github.com/customerio/homework/custom_error"
 	"github.com/customerio/homework/global"
 	"github.com/customerio/homework/report"
 	"github.com/customerio/homework/storage"
+	"github.com/customerio/homework/storage/filesystem_storage"
+	"github.com/customerio/homework/storage/memory_storage"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
 )
 
-const _dataFilePattern = "data/messages.%s.data"
-const _verifyFilePattern = "data/verify.%s.csv"
+const uo = "\033[4m"
+const uc = "\033[0m"
+
+const flagHelpMessage = "usage:  \n    " +
+	"go run . [-i " + uo + "input_file_path" + uc + "]  " +
+	"[-o " + uo + "output_file_path" + uc + "]  " +
+	"[-c " + uo + "verify_file_path" + uc + "]  " +
+	"[-s " + uo + "memory|filesystem" + uc + "]  " +
+	"[-t " + uo + "tmp_dir_path" + uc + "]\n" +
+	"    go run . -h \n\n" +
+	"-i " + uo + "input_file_path" + uc + ", --input=" + uo + "input_file_path" + uc + "\n" +
+	"    Path to file used as input for report generation\n" +
+	"-o " + uo + "output_file_path" + uc + ", --output=" + uo + "output_file_path" + uc + "\n" +
+	"    File path to be used for output file\n" +
+	"-c " + uo + "control_file_path" + uc + ", --control=" + uo + "control_file_path" + uc + "\n" +
+	"    Path to file used as verification of report output\n" +
+	"-s " + uo + "memory|filesystem" + uc + ", --storage=" + uo + "memory|filesystem" + uc + "\n" +
+	"    Storage method for temporary data.  Either \"memory\" or \"filesystem\"\n" +
+	"-t " + uo + "tmp_dir_path" + uc + ", --tmp=" + uo + "tmp_dir_path" + uc + "\n" +
+	"    Directory for temporary data.  Ignored if -s is not set to \"filesystem\"\n" +
+	"-h , --help \n" +
+	"    Display this message\n\n\n"
 
 func main() {
-	if len(os.Args) != 2 {
-		log.Fatal(fmt.Sprintf("Incorrect num of args!  Expected: 1 Found: %d", len(os.Args)-1))
-	}
-
-	if os.Args[1] != "1" && os.Args[1] != "2" && os.Args[1] != "3" {
-		log.Fatal("unknown or invalid argument: " + os.Args[1])
-	}
-
-	global.InputFilePath = fmt.Sprintf(_dataFilePattern, os.Args[1])
-	verifyFile := fmt.Sprintf(_verifyFilePattern, os.Args[1])
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx := parseArgs()
+	ctx, cancel := context.WithCancel(ctx)
 
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
@@ -37,26 +51,28 @@ func main() {
 		cancel()
 	}()
 
-	global.WasInterrupted = storage.WasInterrupted()
-	_ = storage.CreateInterruptedMarkerFile()
-
-	err := report.GenerateReport(ctx)
-	if err != nil {
-		log.Fatal(custom_error.New("Error generating report", err))
+	var storageManager storage.StorageManager
+	if ctx.Value(global.StorageSystemKey) == global.FilesystemStorageType() {
+		storageManager = filesystem_storage.New()
+		//stuff for resume functionality
+		ctx = context.WithValue(ctx, global.InterruptedKey, filesystem_storage.WasInterrupted())
+		filesystem_storage.CreateInterruptedMarkerFile()
+	} else {
+		storageManager = memory_storage.New()
+		ctx = context.WithValue(ctx, global.InterruptedKey, false)
 	}
 
-	if global.UseStorage {
-		err := storage.ClearTempStorage()
-		if err != nil {
-			log.Println(custom_error.New("error clearing tmp storage", err))
-		}
+	err := report.GenerateReport(ctx, storageManager)
+	storageManager.ClearTempStorage()
+	if err != nil {
+		log.Fatal(custom_error.New("Error generating report", err))
 	}
 
 	if err := ctx.Err(); err != nil {
 		log.Fatal(err)
 	}
 
-	err = validate(global.ReportFilePath, verifyFile)
+	err = validate(ctx.Value(global.OutputFilePathKey).(string), ctx.Value(global.VerifyFilePathKey).(string))
 	if err != nil {
 		log.Fatal(custom_error.New("Error validating report", err))
 	}
@@ -64,6 +80,39 @@ func main() {
 	log.Println("SUCCESS")
 
 	os.Exit(0)
+}
+
+func parseArgs() context.Context {
+	var inputFilePath string
+	var outputFilePath string
+	var verifyFilePath string
+	var storageSystem string
+	var tmpDir string
+
+	flag.StringVar(&inputFilePath, "i", "data/messages.1.data", "file path of input file")
+	flag.StringVar(&inputFilePath, "input", "data/messages.1.data", "file path of input file")
+	flag.StringVar(&outputFilePath, "o", "data/report.txt", "file path of output file")
+	flag.StringVar(&outputFilePath, "output", "data/report.txt", "file path of output file")
+	flag.StringVar(&verifyFilePath, "c", "data/verify.1.csv", "file path of control / verify file")
+	flag.StringVar(&verifyFilePath, "control", "data/verify.1.csv", "file path of control / verify file")
+	flag.StringVar(&storageSystem, "s", "memory", "Tmp data storage system, \"memory\" or \"filesystem\"")
+	flag.StringVar(&storageSystem, "storage", "memory", "Tmp data storage system, \"memory\" or \"filesystem\"")
+	flag.StringVar(&tmpDir, "t", "/tmp/go", "Tmp file storage directory path")
+	flag.StringVar(&tmpDir, "tmp", "/tmp/go", "Tmp file storage directory path")
+
+	flag.Usage = func() {
+		fmt.Print(flagHelpMessage)
+	}
+
+	flag.Parse()
+
+	ctx := context.WithValue(context.Background(), global.InputFilePathKey, inputFilePath)
+	ctx = context.WithValue(ctx, global.OutputFilePathKey, outputFilePath)
+	ctx = context.WithValue(ctx, global.VerifyFilePathKey, verifyFilePath)
+	ctx = context.WithValue(ctx, global.StorageSystemKey, global.StorageType(storageSystem))
+	ctx = context.WithValue(ctx, global.TmpDirKey, tmpDir)
+
+	return ctx
 }
 
 // Quick validation of expected and received input.
