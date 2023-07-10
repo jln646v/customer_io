@@ -10,17 +10,16 @@ import (
 	"github.com/customerio/homework/stream"
 	"github.com/customerio/homework/user_history"
 	"log"
-	"os"
 	"strconv"
 	"strings"
 )
 
-var reportFileHandle *os.File
-
-func GenerateReport(ctx context.Context, storageManager storage.StorageManager) error {
-	err := storageManager.DeleteReportFile(ctx)
-	if err != nil {
-		return custom_error.New("Error deleting report file", err).Log()
+func GenerateReport(ctx context.Context) error {
+	if !global.WasInterrupted {
+		err := storage.DeleteReportFile()
+		if err != nil {
+			return custom_error.New("Error deleting report file", err).Log()
+		}
 	}
 
 	recordStream, err := stream.GetRecords(ctx)
@@ -29,27 +28,49 @@ func GenerateReport(ctx context.Context, storageManager storage.StorageManager) 
 	}
 
 	//create users with their associated Events and Attributes
-	user_history.CreateHistories(ctx, recordStream, storageManager)
-
-	//get list of user ids numerically sorted
-	sortedUserIds, err := storageManager.LoadAllUserIdsSorted()
+	//global.UseStorage saves user files to disk
+	//non global.UseStorage maintains entire list in memory
+	var userHistories map[int]*models.User
+	if global.UseStorage {
+		_, err = user_history.CreateHistories(recordStream)
+	} else {
+		userHistories, err = user_history.CreateHistories(recordStream)
+	}
 	if err != nil {
-		return custom_error.New("error getting sorted user ids", err).Log()
+		return custom_error.New("error updating histories", err).Log()
 	}
 
-	var restoreLastProcessedUserId = 0
-	if storageManager.CheckReportFileExist(ctx) {
-		restoreLastProcessedUserId, reportFileHandle = storageManager.MoveToReportEnd(ctx)
+	var sortedUserIds []int
+	var restoreLastProcessedUserId int
+	//get list of user ids numerically sorted
+	if global.UseStorage {
+		sortedUserIds, err = storage.LoadAllUserIds()
+		if err != nil {
+			return custom_error.New("error getting sorted user ids from storage", err).Log()
+		}
+
+		if storage.CheckReportFileExist() {
+			restoreLastProcessedUserId = storage.MoveToReportEnd()
+		}
+	} else {
+		sortedUserIds = user_history.SortUserIds(userHistories)
 	}
 
-	return printReportForEachUser(ctx, sortedUserIds, storageManager, restoreLastProcessedUserId)
+	err = printReportForEachUser(sortedUserIds, userHistories, restoreLastProcessedUserId)
+
+	err = storage.CloseReportFile()
+	if err != nil {
+		log.Println(custom_error.New("error closing Report File", err))
+	}
+
+	return nil
 }
 
 func printReportForEachUser(
-	ctx context.Context,
 	sortedUserIds []int,
-	storageManager storage.StorageManager,
+	userHistories map[int]*models.User,
 	restoreLastProcessedUserId int) error {
+
 	for _, userId := range sortedUserIds {
 		//on interruption restore, skip along sortedUserIds until we get to
 		//the one next after last written to report
@@ -57,38 +78,25 @@ func printReportForEachUser(
 			continue
 		}
 
-		user, err := storageManager.LoadUserState(userId)
-		if err != nil {
-			log.Println(
-				custom_error.New(
-					fmt.Sprintf("error loading state userId: %d", userId), err))
-			continue
+		var user *models.User
+		if global.UseStorage {
+			var err error
+			user, err = storage.LoadUserState(userId)
+			if err != nil {
+				log.Println(
+					custom_error.New(
+						fmt.Sprintf("error loading state userId: %d", userId), err))
+				continue
+			}
+		} else {
+			user = userHistories[userId]
 		}
 
-		err = addLineToReport(ctx, printUserEntry(user)+"\n")
+		err := storage.AddLineToReport(printUserEntry(user) + "\n")
 		if err != nil {
 			return custom_error.New(
 				fmt.Sprintf("error writing user to Report file.  UserId: %d", userId), err).Log()
 		}
-	}
-
-	_ = reportFileHandle.Close()
-
-	return nil
-}
-
-func addLineToReport(ctx context.Context, line string) error {
-	if reportFileHandle == nil {
-		var err error
-		reportFileHandle, err = os.Create(ctx.Value(global.OutputFilePathKey).(string))
-		if err != nil {
-			return custom_error.New("Error creating report file", err).Log()
-		}
-	}
-
-	_, err := reportFileHandle.WriteString(line)
-	if err != nil {
-		return custom_error.New(fmt.Sprintf("Error writing line to report: %s", line), err).Log()
 	}
 
 	return nil
@@ -104,7 +112,6 @@ func printUserEntry(user *models.User) string {
 	printUserEventEntry(user, &sb)
 
 	entry := sb.String()
-	//remove trailing ","
 	return entry[0 : len(entry)-1]
 }
 

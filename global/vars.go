@@ -1,34 +1,8 @@
 package global
 
-const InputFilePathKey = "inputFilePath"
-const OutputFilePathKey = "outputFilePath"
-const VerifyFilePathKey = "verifyFilePath"
-const StorageSystemKey = "storageSystemType"
-const TmpDirKey = "tmpDir"
-const InterruptedKey = "interrupted"
+const UseStorage = false
+const ReportFilePath = "data/output.txt"
 
-type storageType string
+var WasInterrupted = false
 
-const (
-	memory     storageType = "memory"
-	fileSystem storageType = "filesystem"
-)
-
-func MemoryStorageType() storageType {
-	return memory
-}
-
-func FilesystemStorageType() storageType {
-	return fileSystem
-}
-
-func StorageType(str string) storageType {
-	switch str {
-	case "memory":
-		return MemoryStorageType()
-	case "filesystem":
-		return FilesystemStorageType()
-	default:
-		return MemoryStorageType()
-	}
-}
+var InputFilePath string

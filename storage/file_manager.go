@@ -1,7 +1,6 @@
-package filesystem_storage
+package storage
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"github.com/customerio/homework/custom_error"
@@ -19,20 +18,13 @@ const userStateDirectory = "/tmp/go/"
 const resumeMarkerFilePath = userStateDirectory + "marker"
 const offsetMarkerFilePath = userStateDirectory + "offset"
 
-// intentionally not exported
-type fileStorageManager struct {
-	offsetFileHandle *os.File
-}
+var offsetFileHandle *os.File
+var reportFileHandle *os.File
 
-// ignore non exported return type warning
-func New() *fileStorageManager {
-	return &fileStorageManager{}
-}
-
-func (fms *fileStorageManager) DeleteReportFile(ctx context.Context) error {
-	_, err := os.Stat(ctx.Value(global.OutputFilePathKey).(string))
+func DeleteReportFile() error {
+	_, err := os.Stat(global.ReportFilePath)
 	if err == nil {
-		err = os.Remove(ctx.Value(global.OutputFilePathKey).(string))
+		err = os.Remove(global.ReportFilePath)
 		if err != nil {
 			return custom_error.New("Error deleting report file", err).Log()
 		}
@@ -41,28 +33,52 @@ func (fms *fileStorageManager) DeleteReportFile(ctx context.Context) error {
 	return nil
 }
 
-func (fms *fileStorageManager) ClearTempStorage() {
+func ClearTempStorage() error {
 	err := os.RemoveAll(userStateDirectory)
 	if err != nil {
-		log.Println(custom_error.New("Error clearing temp filesystem_storage dir", err))
+		return custom_error.New("Error clearing temp storage dir", err).Log()
 	}
 
 	err = os.Mkdir(userStateDirectory, os.ModePerm)
 	if err != nil {
-		log.Println(custom_error.New("Error recreating tmp filesystem_storage dir after delete", err))
+		return custom_error.New("Error recreating tmp storage dir after delete", err).Log()
 	}
+
+	return nil
 }
 
-func (fms *fileStorageManager) CheckReportFileExist(ctx context.Context) bool {
-	_, err := os.Stat(ctx.Value(global.OutputFilePathKey).(string))
+func CheckReportFileExist() bool {
+	_, err := os.Stat(global.ReportFilePath)
 	return err == nil
 }
 
-func (fms *fileStorageManager) MoveToReportEnd(ctx context.Context) (int, *os.File) {
-	byteArray, err := os.ReadFile(ctx.Value(global.OutputFilePathKey).(string))
+func AddLineToReport(line string) error {
+	if reportFileHandle == nil {
+		var err error
+		reportFileHandle, err = os.Create(global.ReportFilePath)
+		if err != nil {
+			return custom_error.New("Error creating report file", err).Log()
+		}
+	}
+
+	_, err := reportFileHandle.WriteString(line)
+	if err != nil {
+		return custom_error.New("Error writing to report", err).Log()
+	}
+
+	return nil
+}
+
+func MoveToReportEnd() int {
+	if reportFileHandle != nil {
+		log.Println(custom_error.New("Invalid: attempting to seek end of report when already open", nil))
+		return -1
+	}
+
+	byteArray, err := os.ReadFile(global.ReportFilePath)
 	if err != nil {
 		log.Println(custom_error.New("error reading existing report file", err))
-		return -1, nil
+		return -1
 	}
 
 	var userId int
@@ -73,29 +89,42 @@ func (fms *fileStorageManager) MoveToReportEnd(ctx context.Context) (int, *os.Fi
 			indexFirstComma := strings.Index(lastLine, ",")
 			if indexFirstComma < 0 {
 				log.Println("no comma in last line")
-				return -1, nil
+				return -1
 			}
 
 			userId, err = strconv.Atoi(lastLine[0:indexFirstComma])
 			if err != nil {
 				log.Println(custom_error.New("error parsing last userId in report", err))
-				return -1, nil
 			}
 		}
 	}
 
-	reportFileHandle, err := os.OpenFile(ctx.Value(global.OutputFilePathKey).(string), os.O_RDWR, 0666)
+	reportFileHandle, err = os.OpenFile(global.ReportFilePath, os.O_RDWR, 0666)
 	if err != nil {
 		log.Println(custom_error.New("error opening existing report file", err))
-		return -1, nil
+		return -1
 	}
 	//move file pointer to end of file
 	_, _ = reportFileHandle.Seek(0, 2)
 
-	return userId, reportFileHandle
+	return userId
 }
 
-func (fms *fileStorageManager) LoadUserState(userId int) (*models.User, error) {
+func CloseReportFile() error {
+	if reportFileHandle == nil {
+		return custom_error.New("reportFileHandle is nil, unable to close", nil).Log()
+	}
+
+	err := reportFileHandle.Close()
+	reportFileHandle = nil
+	if err != nil {
+		return custom_error.New("Error closing report file", err).Log()
+	}
+
+	return nil
+}
+
+func LoadUserState(userId int) (*models.User, error) {
 	id := strconv.Itoa(userId)
 
 	//open file and read json
@@ -131,7 +160,7 @@ func (fms *fileStorageManager) LoadUserState(userId int) (*models.User, error) {
 	return &user, nil
 }
 
-func (fms *fileStorageManager) SaveUserState(user *models.User) error {
+func SaveUserState(user *models.User) error {
 	//create and open file
 	fileHandle, err := os.Create(userStateDirectory + strconv.Itoa(user.ID))
 	if err != nil {
@@ -159,10 +188,10 @@ func (fms *fileStorageManager) SaveUserState(user *models.User) error {
 	return nil
 }
 
-func (fms *fileStorageManager) LoadAllUserIdsSorted() ([]int, error) {
+func LoadAllUserIds() ([]int, error) {
 	f, err := os.Open(userStateDirectory)
 	if err != nil {
-		return nil, custom_error.New("error opening tmp filesystem_storage dir "+userStateDirectory, err).Log()
+		return nil, custom_error.New("error opening tmp storage dir "+userStateDirectory, err).Log()
 	}
 	//to prevent warning about unused err
 	// Non obfuscated version:
@@ -200,16 +229,18 @@ func (fms *fileStorageManager) LoadAllUserIdsSorted() ([]int, error) {
 	return ids, nil
 }
 
-func CreateInterruptedMarkerFile() {
+func CreateInterruptedMarkerFile() error {
 	err := os.MkdirAll(userStateDirectory, fs.ModePerm)
 	if err != nil {
-		log.Println(custom_error.New("error creating temp files directory", err))
+		return custom_error.New("error creating temp files directory", err).Log()
 	}
 
 	_, err = os.Create(resumeMarkerFilePath)
 	if err != nil {
-		log.Println(custom_error.New("error creating interrupted marker file", err))
+		return custom_error.New("error creating interrupted marker file", err).Log()
 	}
+
+	return nil
 }
 
 // check for marker file existance to know if we start clean
@@ -224,31 +255,33 @@ func WasInterrupted() bool {
 // used for resume from interruption functionality
 // while building history from records, this saves the offset
 // of the current record so we know where to resume from
-func (fms *fileStorageManager) SetCurrentRecordOffset(offset int64) {
-	if fms.offsetFileHandle == nil {
+func SetCurrentRecordOffset(offset int64) error {
+	if offsetFileHandle == nil {
 		var err error
-		fms.offsetFileHandle, err = os.Create(offsetMarkerFilePath)
+		offsetFileHandle, err = os.Create(offsetMarkerFilePath)
 		if err != nil {
-			log.Println(custom_error.New("error creating offset marker file "+offsetMarkerFilePath, err))
+			return custom_error.New("error creating offset marker file "+offsetMarkerFilePath, err).Log()
 		}
 	}
 
-	_, err := fms.offsetFileHandle.WriteAt([]byte(strconv.FormatInt(offset, 10)), 0)
+	_, err := offsetFileHandle.WriteAt([]byte(strconv.FormatInt(offset, 10)), 0)
 	if err != nil {
-		log.Println(custom_error.New("Error setting current record offset", err))
+		return custom_error.New("Error setting current record offset", err).Log()
 	}
+
+	return nil
 }
 
-func (fms *fileStorageManager) GetCurrentRecordOffset() (int64, error) {
+func GetCurrentRecordOffset() (int64, error) {
 	var byteArray []byte
-	if fms.offsetFileHandle == nil {
+	if offsetFileHandle == nil {
 		var err error
 		byteArray, err = os.ReadFile(offsetMarkerFilePath)
 		if err != nil {
 			return 0, custom_error.New("error getting current record offset from ReadFile", err).Log()
 		}
 	} else {
-		_, err := fms.offsetFileHandle.ReadAt(byteArray, 0)
+		_, err := offsetFileHandle.ReadAt(byteArray, 0)
 		if err != nil {
 			return 0, custom_error.New("error seeking to offset 0", err).Log()
 		}
@@ -262,14 +295,14 @@ func (fms *fileStorageManager) GetCurrentRecordOffset() (int64, error) {
 	return offset, nil
 }
 
-func (fms *fileStorageManager) CheckRecordOffsetExist() bool {
+func CheckRecordOffsetExist() bool {
 	_, err := os.Stat(offsetMarkerFilePath)
 	//dont handle err as it occurs every time file exist = false
 	return err == nil
 }
 
-func (fms *fileStorageManager) RemoveOffsetFile() {
-	fms.offsetFileHandle = nil
+func RemoveOffsetFile() {
+	offsetFileHandle = nil
 	err := os.Remove(offsetMarkerFilePath)
 	if err != nil {
 		log.Println(custom_error.New("error deleting offset file", err))

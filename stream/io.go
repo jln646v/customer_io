@@ -70,17 +70,16 @@ func process(ctx context.Context, f io.ReadSeeker) (<-chan *Record, error) {
 }
 
 func GetRecords(ctx context.Context) (<-chan *Record, error) {
-	inputFilePath := ctx.Value(global.InputFilePathKey).(string)
-	f, err := os.Open(inputFilePath)
+	f, err := os.Open(global.InputFilePath)
 	if err != nil {
-		return nil, custom_error.New("Error opening file: "+inputFilePath, err).Log()
+		return nil, custom_error.New("Error opening file: "+global.InputFilePath, err).Log()
 	}
 
 	seeker := io.ReadSeeker(f)
 
 	ch, err := process(ctx, seeker)
 	if err != nil {
-		return nil, custom_error.New("error processing stream from "+inputFilePath, err).Log()
+		return nil, custom_error.New("error processing stream from "+global.InputFilePath, err).Log()
 	}
 
 	return ch, nil
