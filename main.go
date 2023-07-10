@@ -41,7 +41,7 @@ const flagHelpMessage = "usage:  \n    " +
 	"    Display this message\n\n\n"
 
 func main() {
-	ctx := parseArgs()
+	ctx := parseArgs(context.Background())
 	ctx, cancel := context.WithCancel(ctx)
 
 	sigs := make(chan os.Signal, 1)
@@ -82,7 +82,7 @@ func main() {
 	os.Exit(0)
 }
 
-func parseArgs() context.Context {
+func parseArgs(ctx context.Context) context.Context {
 	var inputFilePath string
 	var outputFilePath string
 	var verifyFilePath string
@@ -106,7 +106,7 @@ func parseArgs() context.Context {
 
 	flag.Parse()
 
-	ctx := context.WithValue(context.Background(), global.InputFilePathKey, inputFilePath)
+	ctx = context.WithValue(ctx, global.InputFilePathKey, inputFilePath)
 	ctx = context.WithValue(ctx, global.OutputFilePathKey, outputFilePath)
 	ctx = context.WithValue(ctx, global.VerifyFilePathKey, verifyFilePath)
 	ctx = context.WithValue(ctx, global.StorageSystemKey, global.StorageType(storageSystem))
